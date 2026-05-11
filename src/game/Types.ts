@@ -41,6 +41,11 @@ export interface Player extends GameObject {
   grenades: number;
   speed: number;
   creditsEarned: number;
+  xpEarned: number;
+  damageReduction?: number;
+  equippedMeleeWeapon?: string | null;
+  meleeLevel?: number;
+  meleeCooldownTimer?: number;
 }
 
 export interface Enemy extends GameObject {

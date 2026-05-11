@@ -12,29 +12,68 @@ import { audioSystem } from './lib/audio';
 import { motion, AnimatePresence } from 'motion/react';
 import { MonitorPlay, Trophy, Skull, RefreshCw, Play, Volume2, VolumeX, Shield, Swords, DollarSign, Crosshair, Zap, Anchor, Info, ArrowLeft, Trash2, CheckCircle2, Lock, Star, ChevronRight, Map } from 'lucide-react';
 
+import { RANKS, getRankByXP, getNextRankByXP } from './game/Ranks';
+import { StageBackground } from './components/StageBackground';
+import { ArmoryScreen } from './components/ArmoryScreen';
+
 interface SaveData {
+  version: number;
   credits: number;
+  xp: number;
+  rankRewardsClaimed: number[];
   ownedWeapons: WeaponType[];
   weaponLevels: Record<string, number>;
   primaryWeapon: WeaponType;
   secondaryWeapon: WeaponType | null;
+
+  ownedMeleeWeapons: string[];
+  meleeWeaponLevels: Record<string, number>;
+  equippedMeleeWeapon: string;
+
+  ownedArmor: string[];
+  equippedArmor: string | null;
+
+  currentLives: number;
+  maxLives: number;
+  reviveTokens: number;
+
   highScore: number;
   unlockedLevels: number[];
   completedLevels: number[];
   levelScores: Record<number, number>;
+  finalRewardClaimed: boolean;
+  newGamePlusUnlocked: boolean;
 }
 
 const DEFAULT_SAVE: SaveData = {
+  version: 2,
   credits: 0,
+  xp: 0,
+  rankRewardsClaimed: [],
   ownedWeapons: ['pistol'],
   weaponLevels: { pistol: 1 },
   primaryWeapon: 'pistol',
   secondaryWeapon: null,
+
+  ownedMeleeWeapons: ['combat_knife'],
+  meleeWeaponLevels: { combat_knife: 1 },
+  equippedMeleeWeapon: 'combat_knife',
+
+  ownedArmor: [],
+  equippedArmor: null,
+
+  currentLives: 3,
+  maxLives: 3,
+  reviveTokens: 0,
+
   highScore: 0,
   unlockedLevels: [1],
   completedLevels: [],
-  levelScores: {}
+  levelScores: {},
+  finalRewardClaimed: false,
+  newGamePlusUnlocked: false
 };
+
 
 export default function App() {
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -87,12 +126,18 @@ export default function App() {
      if ((gameState === 'GAMEOVER' || gameState === 'VICTORY') && engineRef.current) {
          const p = engineRef.current.player;
          const addedCredits = p.creditsEarned;
+         let addedXP = p.xpEarned;
          
          let newSave = { ...saveData };
          
          if (currentLevel) {
              const isVictory = gameState === 'VICTORY';
              if (isVictory) {
+                 addedXP += 300; // Complete mission bonus
+                 if (p.lives === newSave.currentLives || p.lives === newSave.maxLives || p.lives >= 3) {
+                     addedXP += 250; // No dying bonus (approximate check based on remaining lives vs starting)
+                 }
+
                  if (!newSave.completedLevels.includes(currentLevel.id)) {
                      newSave.completedLevels.push(currentLevel.id);
                      newSave.credits += currentLevel.rewardCredits;
@@ -102,6 +147,24 @@ export default function App() {
                  }
                  if (!newSave.unlockedLevels.includes(currentLevel.id + 1) && currentLevel.id < LEVELS.length) {
                      newSave.unlockedLevels.push(currentLevel.id + 1);
+                 }
+                 
+                 // Final stage unlock
+                 if (currentLevel.id === LEVELS[LEVELS.length - 1].id) {
+                     newSave.finalRewardClaimed = true;
+                     newSave.newGamePlusUnlocked = true;
+                     
+                     if (!newSave.ownedMeleeWeapons) newSave.ownedMeleeWeapons = [];
+                     if (!newSave.ownedArmor) newSave.ownedArmor = [];
+                     if (!newSave.meleeWeaponLevels) newSave.meleeWeaponLevels = {};
+                     
+                     if (!newSave.ownedMeleeWeapons.includes('plasma_saber')) {
+                         newSave.ownedMeleeWeapons.push('plasma_saber');
+                         newSave.meleeWeaponLevels['plasma_saber'] = 5; // Start at max level
+                     }
+                     if (!newSave.ownedArmor.includes('iron_phoenix_armor')) {
+                         newSave.ownedArmor.push('iron_phoenix_armor');
+                     }
                  }
              }
              
@@ -115,6 +178,9 @@ export default function App() {
          }
          
          newSave.credits += addedCredits;
+         newSave.xp += addedXP;
+         // Note: p doesn't persist xpEarned back, so we reflect the total here.
+         p.xpEarned = addedXP; 
          persistSave(newSave);
      }
   }, [gameState]);
@@ -171,8 +237,22 @@ export default function App() {
     }
   }, []);
 
+  const tryLockLandscape = () => {
+     try {
+         if (document.documentElement.requestFullscreen) {
+            document.documentElement.requestFullscreen().catch(() => {});
+         }
+         if (window.screen && window.screen.orientation && (window.screen.orientation as any).lock) {
+            (window.screen.orientation as any).lock('landscape').catch(() => {});
+         }
+     } catch (e) {
+         // ignore
+     }
+  };
+
   const startGame = useCallback((level?: LevelConfig) => {
     audioSystem.init();
+    tryLockLandscape();
     if (level) setCurrentLevel(level);
     else setCurrentLevel(null);
     
@@ -181,7 +261,12 @@ export default function App() {
             primary: saveData.primaryWeapon,
             secondary: saveData.secondaryWeapon,
             levels: saveData.weaponLevels,
-            levelConfig: level // passing null means endless mode
+            levelConfig: level, // passing null means endless mode
+            equippedArmor: saveData.equippedArmor,
+            equippedMeleeWeapon: saveData.equippedMeleeWeapon,
+            meleeLevels: saveData.meleeWeaponLevels,
+            maxLives: saveData.maxLives,
+            currentLives: saveData.currentLives,
         });
         engineRef.current.width = canvasRef.current?.width || 800;
         engineRef.current.height = canvasRef.current?.height || 600;
@@ -210,17 +295,44 @@ export default function App() {
 
   return (
     <div className="relative w-full h-[100dvh] bg-slate-950 overflow-hidden font-display select-none flex flex-col justify-center portrait:justify-start portrait:pt-8 items-center">
-      <div className="hidden sm:hidden portrait:flex absolute top-0 z-[60] w-full bg-yellow-500 text-black text-xs font-bold justify-center p-1 pointer-events-none">
-        For the best experience, rotate your phone to landscape.
-      </div>
+      {/* Portrait warning / Rotate device overlay */}
+      {gameState === 'PLAYING' && (
+        <div className="hidden sm:hidden portrait:flex fixed inset-0 z-[100] bg-slate-950/95 flex-col items-center justify-center p-6 text-center backdrop-blur-sm">
+           <div className="text-yellow-400 mb-4 animate-bounce">
+              <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 14c.3 0 .7.1 1 .3l2.8 1.9c.7.5 1.7.3 2.2-.3s.3-1.7-.3-2.2l-2.8-1.9c-.3-.2-.5-.5-.5-.8V6a2 2 0 0 0-4 0v5"></path><path d="M12 5V2.5A1.5 1.5 0 0 0 10.5 1h-7A1.5 1.5 0 0 0 2 2.5v15A1.5 1.5 0 0 0 3.5 19H8"></path><path d="M13 18.5A2.5 2.5 0 0 0 15.5 21h3.75a2.25 2.25 0 0 0 1.97-3.32l-3-5.26a1.5 1.5 0 0 0-2.6 0l-1.62 2.84"></path></svg>
+           </div>
+           <h2 className="text-2xl font-black text-white mb-2">ROTATE DEVICE</h2>
+           <p className="text-slate-400 text-sm max-w-xs mb-8">
+              For the best experience, please rotate your phone to landscape to play Bullet Forge Commandos.
+           </p>
+           <button 
+             onClick={() => {
+                if (document.documentElement.requestFullscreen) {
+                    document.documentElement.requestFullscreen().catch(()=>{});
+                }
+             }}
+             className="px-6 py-3 bg-slate-800 text-white font-bold rounded-lg border-2 border-slate-600 active:bg-slate-700"
+           >
+             Try Fullscreen
+           </button>
+        </div>
+      )}
+
+      {/* Basic portrait warning for menus */}
+      {gameState !== 'PLAYING' && (
+         <div className="hidden sm:hidden portrait:flex absolute top-0 z-[60] w-full bg-yellow-500 text-black text-[10px] font-bold justify-center p-1 pointer-events-none">
+           For the best experience, rotate your phone to landscape.
+         </div>
+      )}
 
       <div 
         ref={wrapperRef} 
-        className="relative w-full h-full sm:w-[90vw] sm:h-[90vh] sm:aspect-video lg:max-w-7xl lg:max-h-[80vh] portrait:h-[55dvh] portrait:max-h-[60dvh] sm:portrait:max-h-full sm:portrait:h-[90vh] bg-slate-900 shadow-[0_0_50px_rgba(0,0,0,0.8)] overflow-hidden touch-none"
+        className="relative w-full h-full lg:w-[92vw] lg:h-[92vh] lg:aspect-video lg:max-w-7xl lg:max-h-[85vh] lg:rounded-xl bg-slate-900 lg:shadow-[0_0_50px_rgba(0,0,0,0.8)] overflow-hidden touch-none"
       >
+        <StageBackground theme={currentLevel?.theme || 'urban'} engine={engineRef.current} />
         <canvas 
           ref={canvasRef} 
-          className="absolute inset-0 block shadow-inner bg-slate-900 w-full h-full"
+          className="absolute inset-0 block shadow-inner bg-transparent w-full h-full"
         />
 
         <button onClick={toggleAudio} className="absolute top-4 right-4 z-50 p-2 bg-slate-800/80 text-white rounded-full hover:bg-slate-700 transition">
@@ -234,6 +346,9 @@ export default function App() {
         {gameState === 'START' && (
           <Overlay title="BULLET FORGE" subtitle="COMMANDOS">
             <div className="flex flex-col items-center gap-4 mt-8 px-4 w-full">
+               
+               <RankDisplay xp={saveData.xp} />
+
                <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={() => setGameState('CAMPAIGN')} className="w-full max-w-[260px] flex items-center justify-center gap-2 px-6 py-4 bg-red-600 text-white text-xl font-bold rounded-lg shadow-[0_0_15px_rgba(220,38,38,0.5)] border-2 border-red-400 hover:bg-red-500 transition-colors">
                  <Map fill="currentColor" /> CAMPAIGN
                </motion.button>
@@ -338,6 +453,15 @@ export default function App() {
                   <span className="text-yellow-400 font-mono font-bold flex items-center gap-1">+<DollarSign size={16}/>{playerData?.creditsEarned || 0}</span>
                </div>
                
+               <div className="flex justify-between w-full border-b border-slate-700 pb-2">
+                  <span className="text-slate-400">XP Earned:</span>
+                  <span className="text-blue-400 font-mono font-bold flex items-center gap-1">+{playerData?.xpEarned || 0} XP</span>
+               </div>
+
+               <div className="w-full mt-4">
+                  <RankDisplay xp={saveData.xp} />
+               </div>
+               
                {gameState === 'VICTORY' && currentLevel && wasFirstClearRef.current && (
                    <div className="flex justify-between w-full border-b border-slate-700 pb-2">
                       <span className="text-slate-400">Mission Reward:</span>
@@ -400,6 +524,13 @@ export default function App() {
          <TouchControls 
              onBtnDown={handleBtnDown} 
              onBtnUp={handleBtnUp} 
+             onToggleFullscreen={() => {
+                 if (!document.fullscreenElement) {
+                     document.documentElement.requestFullscreen().catch(() => {});
+                 } else {
+                     document.exitFullscreen().catch(() => {});
+                 }
+             }}
          />
       )}
 
@@ -425,38 +556,44 @@ export default function App() {
 function GameHUD({ playerData, saveData, togglePause, boss, currentLevel }: any) {
     return (
         <>
-           <div className="absolute top-0 left-0 w-full p-4 flex justify-between items-start pointer-events-none z-10">
-              <div className="flex flex-col gap-2">
-                 <div className="flex items-center gap-2 bg-slate-900/80 p-2 rounded-lg border border-slate-700 backdrop-blur-sm">
-                    <Shield className="text-green-400" />
-                    <div className="w-48 h-4 bg-slate-800 rounded-full overflow-hidden border border-slate-600 shadow-inner inline-block">
-                        <div 
-                          className="h-full bg-gradient-to-r from-red-600 to-green-500 transition-all duration-300"
-                          style={{ width: `${(Math.max(0, playerData.hp) / playerData.maxHp) * 100}%` }}
-                        />
+            <div className="absolute top-0 left-0 w-full p-2 sm:p-4 pt-safe pl-safe pr-safe flex flex-col sm:flex-row justify-between items-start pointer-events-none z-10 gap-2">
+                <div className="flex flex-wrap gap-2">
+                    <div className="flex items-center gap-1 sm:gap-2 bg-slate-900/80 p-1 sm:p-2 rounded-lg border border-slate-700 backdrop-blur-sm">
+                        <Shield className="text-green-400" size={16} />
+                        <div className="w-24 sm:w-48 h-3 sm:h-4 bg-slate-800 rounded-full overflow-hidden border border-slate-600 shadow-inner inline-block">
+                            <div
+                                className="h-full bg-gradient-to-r from-red-600 to-green-500 transition-all duration-300"
+                                style={{ width: `${(Math.max(0, playerData.hp) / playerData.maxHp) * 100}%` }}
+                            />
+                        </div>
+                        <span className="text-white font-mono font-bold w-6 sm:w-12 text-right text-xs sm:text-base">{Math.max(0, Math.floor(playerData.hp))}</span>
                     </div>
-                    <span className="text-white font-mono font-bold w-12 text-right">{Math.max(0, Math.floor(playerData.hp))}</span>
-                 </div>
-                 
-                 <div className="flex gap-2">
-                     <div className="bg-slate-900/80 px-3 py-1 rounded border border-slate-700 text-red-500 font-bold flex items-center gap-1">
-                        ♥ {playerData.lives} LIVES
-                     </div>
-                     <div className="bg-slate-900/80 px-3 py-1 rounded border border-slate-700 text-green-400 font-bold flex items-center gap-1">
-                        ◎ {playerData.grenades}
-                     </div>
-                     <div className="bg-slate-900/80 px-3 py-1 rounded border border-slate-700 text-yellow-400 font-bold flex items-center gap-1">
-                        <DollarSign size={16}/> {saveData.credits + playerData.creditsEarned}
-                     </div>
-                 </div>
-              </div>
 
-              <div className="flex flex-col gap-2 items-end">
-                  <div className="bg-slate-900/80 px-4 py-2 rounded-lg border border-slate-700 text-yellow-400 font-mono font-bold text-2xl drop-shadow-[0_0_10px_rgba(250,204,21,0.5)]">
-                     {playerData.score.toString().padStart(6, '0')}
-                  </div>
-                  
-                  <div className="flex items-start gap-2 max-w-sm">
+                    <div className="flex gap-1 sm:gap-2 text-[10px] sm:text-sm">
+                        <div className="bg-slate-900/80 px-2 py-1 rounded border border-slate-700 text-red-500 font-bold flex items-center gap-1">
+                            ♥ {playerData.lives}
+                        </div>
+                        <div className="bg-slate-900/80 px-2 py-1 rounded border border-slate-700 text-green-400 font-bold flex items-center gap-1">
+                            ◎ {playerData.grenades}
+                        </div>
+                        <div className="bg-slate-900/80 px-2 py-1 rounded border border-slate-700 text-yellow-400 font-bold flex items-center gap-1 outline outline-yellow-400/20">
+                            <DollarSign size={14} /> {saveData.credits + playerData.creditsEarned}
+                        </div>
+                    </div>
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-2 items-end sm:items-start ml-auto">
+                    <div className="flex flex-col items-end gap-1">
+                        <div className="bg-slate-900/80 px-2 sm:px-4 py-1 sm:py-2 rounded-lg border border-slate-700 text-yellow-400 font-mono font-bold text-sm sm:text-2xl drop-shadow-[0_0_10px_rgba(250,204,21,0.5)]">
+                           {playerData.score.toString().padStart(6, '0')}
+                        </div>
+                        <div className="bg-slate-900/80 px-2 py-0.5 rounded border border-slate-700 flex items-center gap-1 text-[10px] sm:text-xs font-bold text-white uppercase mt-1">
+                           <Star size={12} className="text-yellow-400 fill-yellow-400" />
+                           {getRankByXP(saveData.xp + playerData.xpEarned).name}
+                        </div>
+                    </div>
+                    
+                    <div className="flex items-start gap-1 sm:gap-2 max-w-sm">
                       {/* Secondary Wpn */}
                       {playerData.secondaryWeapon && (
                          <div className="flex flex-col items-center bg-slate-900/80 p-2 rounded border border-slate-700 opacity-60">
@@ -469,23 +606,23 @@ function GameHUD({ playerData, saveData, togglePause, boss, currentLevel }: any)
                       )}
                       
                       {/* Current Wpn */}
-                      <div className="flex flex-col items-end bg-slate-900/80 p-2 rounded border border-slate-700">
-                          <span className="text-xs text-slate-400 font-bold uppercase tracking-wider">
-                             {playerData.comboActive ? playerData.comboActive.replace(/([A-Z])/g, ' $1').trim() : WEAPON_DEFS[playerData.currentWeapon as WeaponType]?.name}
+                      <div className="flex flex-col items-end bg-slate-900/80 p-1.5 sm:p-2 rounded border border-slate-700">
+                          <span className="text-[10px] sm:text-xs text-slate-400 font-bold uppercase tracking-wider leading-none">
+                             {playerData.comboActive ? playerData.comboActive.replace(/([A-Z])/g, ' $1').trim() : (WEAPON_DEFS[playerData.currentWeapon as WeaponType]?.name?.slice(0, 10) || playerData.currentWeapon)}
                           </span>
-                          <div className="flex items-center gap-2 mt-1">
+                          <div className="flex items-center gap-1 sm:gap-2 mt-1">
                              <div 
-                               className={`w-6 h-6 rounded-sm ${playerData.comboActive ? 'animate-pulse' : ''}`} 
+                               className={`w-3 h-3 sm:w-6 sm:h-6 rounded-sm ${playerData.comboActive ? 'animate-pulse' : ''}`} 
                                style={{backgroundColor: playerData.comboActive ? '#a855f7' : WEAPON_DEFS[playerData.currentWeapon as WeaponType]?.color}}
                              />
-                             <div className="font-mono text-lg text-white w-12 text-right">
+                             <div className="font-mono text-xs sm:text-lg text-white w-6 sm:w-12 text-right leading-none">
                                 {playerData.currentWeapon === 'pistol' && !playerData.comboActive ? '∞' : 
                                  playerData.comboActive ? Math.ceil(playerData.comboTimer/60) + 's' : 
                                  playerData.ammo[playerData.currentWeapon]}
                              </div>
                           </div>
                           {playerData.comboActive && (
-                              <div className="w-full h-1 bg-slate-800 mt-2 rounded overflow-hidden">
+                              <div className="w-full h-1 bg-slate-800 mt-1 sm:mt-2 rounded overflow-hidden">
                                  <div className="h-full bg-purple-500" style={{width: `${(playerData.comboTimer / 600)*100}%`}} />
                               </div>
                           )}
@@ -502,11 +639,11 @@ function GameHUD({ playerData, saveData, togglePause, boss, currentLevel }: any)
            </button>
 
            {boss && (
-              <div className="absolute top-16 sm:top-20 left-1/2 -translate-x-1/2 w-[90%] sm:w-1/2 max-w-2xl text-center pointer-events-none z-10 text-xs sm:text-base">
+              <div className="absolute top-16 sm:top-20 left-1/2 -translate-x-1/2 w-[90%] sm:w-1/2 max-w-2xl text-center pointer-events-none z-10 text-[10px] sm:text-base mt-4 sm:mt-0">
                  <div className="text-red-500 font-bold mb-1 drop-shadow-[0_0_5px_rgba(239,68,68,0.8)] tracking-widest sm:text-lg uppercase">
                      {currentLevel ? currentLevel.boss : 'IRON BEETLE TANK'}
                  </div>
-                 <div className="w-full h-6 bg-slate-950 rounded-sm border-2 border-slate-700 p-[2px]">
+                 <div className="w-full h-3 sm:h-6 bg-slate-950 rounded-sm border sm:border-2 border-slate-700 p-0.5 sm:p-[2px]">
                     <div 
                         className="h-full bg-red-600 transition-all"
                         style={{ width: `${(boss.hp / boss.maxHp) * 100}%` }}
@@ -639,179 +776,35 @@ function CampaignScreen({ saveData, onStart, onClose }: { saveData: SaveData, on
 }
 
 // -------------------------------------------------------------
-// Component: ArmoryScreen
+// Component: RankDisplay
 // -------------------------------------------------------------
-function ArmoryScreen({ saveData, onSave, onClose }: { saveData: SaveData, onSave: (d: SaveData) => void, onClose: () => void }) {
+
+function RankDisplay({ xp }: { xp: number }) {
+    const currentRank = getRankByXP(xp);
+    const nextRank = getNextRankByXP(xp);
+    const progress = nextRank ? ((xp - currentRank.xpRequired) / (nextRank.xpRequired - currentRank.xpRequired)) * 100 : 100;
     
-    // Convert to array of entries for UI mapping
-    const weaponList = Object.entries(WEAPON_DEFS).map(([id, wDef]) => {
-        const isOwned = saveData.ownedWeapons.includes(id as WeaponType);
-        const level = saveData.weaponLevels[id] || 1;
-        const isEquippedPrimary = saveData.primaryWeapon === id;
-        const isEquippedSecondary = saveData.secondaryWeapon === id;
-        return { id: id as WeaponType, ...wDef, isOwned, level, isEquippedPrimary, isEquippedSecondary };
-    });
-
-    const getUpgradePrice = (level: number) => {
-        if (level === 1) return 250;
-        if (level === 2) return 500;
-        if (level === 3) return 800;
-        if (level === 4) return 1200;
-        return null; // max level
-    };
-
-    const handleBuy = (w: any) => {
-        if (saveData.credits >= w.price) {
-           onSave({
-               ...saveData,
-               credits: saveData.credits - w.price,
-               ownedWeapons: [...saveData.ownedWeapons, w.id],
-               weaponLevels: { ...saveData.weaponLevels, [w.id]: 1 }
-           });
-           audioSystem.init();
-           audioSystem.playPickup();
-        }
-    };
-
-    const handleUpgrade = (w: any) => {
-        const cost = getUpgradePrice(w.level);
-        if (cost && saveData.credits >= cost) {
-             onSave({
-                 ...saveData,
-                 credits: saveData.credits - cost,
-                 weaponLevels: { ...saveData.weaponLevels, [w.id]: w.level + 1 }
-             });
-             audioSystem.init();
-             audioSystem.playPickup();
-        }
-    };
-
-    const handleEquipPrimary = (w: any) => {
-        let newSec = saveData.secondaryWeapon;
-        if (newSec === w.id) newSec = null; // Can't have same for both
-        onSave({ ...saveData, primaryWeapon: w.id, secondaryWeapon: newSec });
-    };
-
-    const handleEquipSecondary = (w: any) => {
-        let newPrim = saveData.primaryWeapon;
-        if (newPrim === w.id) return; // Disallow doing this directly to keep simple
-        onSave({ ...saveData, secondaryWeapon: w.id });
-    };
-
     return (
-        <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="absolute inset-0 bg-slate-900 z-50 flex flex-col overflow-hidden font-display"
-        >
-            <div className="flex items-center justify-between p-6 bg-slate-950 border-b-2 border-slate-700">
-               <div className="flex items-center gap-4">
-                  <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={onClose} className="p-2 bg-slate-800 text-slate-300 rounded border border-slate-600 hover:bg-slate-700">
-                     <ArrowLeft />
-                  </motion.button>
-                  <h1 className="text-3xl font-bold font-mono text-white tracking-widest flex items-center gap-2"><Shield className="text-blue-500"/> ARMORY</h1>
+        <div className="bg-slate-900/80 border border-slate-700 p-3 rounded-lg flex flex-col items-center gap-2 mb-4 w-full max-w-[260px]">
+           <div className="flex justify-between w-full items-center">
+              <span className="text-slate-400 text-xs font-bold uppercase tracking-wider">Rank</span>
+              <span className={`font-black text-lg drop-shadow-[0_0_5px_currentColor]`} style={{ color: currentRank.color === 'gray' ? '#9ca3af' : currentRank.color === 'green' ? '#4ade80' : currentRank.color === 'blue' ? '#60a5fa' : currentRank.color === 'cyan' ? '#22d3ee' : currentRank.color === 'teal' ? '#2dd4bf' : currentRank.color === 'indigo' ? '#818cf8' : currentRank.color === 'purple' ? '#c084fc' : currentRank.color === 'fuchsia' ? '#e879f9' : currentRank.color === 'pink' ? '#f472b6' : currentRank.color === 'rose' ? '#fb7185' : currentRank.color === 'red' ? '#f87171' : currentRank.color === 'orange' ? '#fb923c' : currentRank.color === 'yellow' ? '#facc15' : currentRank.color === 'amber' ? '#fbbf24' : '#ffffff' }}>{currentRank.name} {currentRank.badge}</span>
+           </div>
+           {nextRank ? (
+               <div className="w-full">
+                   <div className="flex justify-between text-[10px] text-slate-500 font-mono mb-1">
+                      <span>{xp} XP</span>
+                      <span>{nextRank.xpRequired} XP</span>
+                   </div>
+                   <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden border border-slate-700">
+                      <div className="h-full bg-yellow-400" style={{ width: `${progress}%` }} />
+                   </div>
                </div>
-               <div className="flex items-center gap-2 bg-slate-800 px-6 py-2 rounded-lg border border-slate-600 shadow-inner">
-                   <span className="text-slate-400 font-bold uppercase tracking-wider text-sm">Credits</span>
-                   <span className="text-yellow-400 font-mono text-2xl font-bold flex items-center gap-1"><DollarSign size={20}/> {saveData.credits}</span>
-               </div>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-6 md:p-8 custom-scrollbar relative">
-               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 max-w-7xl mx-auto">
-                   {weaponList.map(w => (
-                       <div key={w.id} className={`flex flex-col bg-slate-800/80 rounded-xl border-2 ${w.isEquippedPrimary ? 'border-green-500 shadow-[0_0_15px_rgba(34,197,94,0.3)]' : w.isOwned ? 'border-blue-500/50' : 'border-slate-700'} overflow-hidden relative`}>
-                           
-                           {w.isEquippedPrimary && <div className="absolute top-0 right-0 bg-green-500 text-slate-950 text-[10px] font-bold px-2 py-1 rounded-bl-lg uppercase tracking-widest flex items-center gap-1"><CheckCircle2 size={12}/> Primary</div>}
-                           {w.isEquippedSecondary && <div className="absolute top-0 right-0 bg-yellow-500 text-slate-950 text-[10px] font-bold px-2 py-1 rounded-bl-lg uppercase tracking-widest flex items-center gap-1"><CheckCircle2 size={12}/> Secondary</div>}
-
-                           <div className="p-4 border-b border-slate-700/50 flex items-center gap-3 bg-slate-900/50">
-                               <div className="w-10 h-10 rounded border border-slate-600 shadow-inner flex items-center justify-center shrink-0" style={{backgroundColor: w.color}}>
-                                  <Swords size={20} className="text-slate-950 opacity-50" />
-                               </div>
-                               <div>
-                                   <h3 className="text-lg font-bold text-white leading-tight">{w.name}</h3>
-                                   <div className="text-xs text-slate-400">{w.isOwned ? `Level ${w.level} / 5` : 'Locked'}</div>
-                               </div>
-                           </div>
-
-                           <div className="p-4 flex-1 flex flex-col gap-4">
-                               <p className="text-sm text-slate-300 min-h-[40px] italic">"{w.description}"</p>
-                               
-                               <div className="space-y-2 bg-slate-900/60 p-3 rounded border border-slate-700/50">
-                                  {/* Calculate visual stats based on level */}
-                                  <StatRow label="Damage" value={w.isOwned && w.level >= 2 ? Math.floor(w.damage * 1.15) : w.damage} isUpgraded={w.isOwned && w.level>=2} />
-                                  <StatRow label="Fire Rate" value={w.fireRate} inverse isUpgraded={w.isOwned && w.level>=4} suffix="ms" />
-                                  <StatRow label="Ammo" value={w.maxAmmo === Infinity ? '∞' : (w.isOwned && w.level>=3 ? Math.floor(w.maxAmmo*1.2) : w.maxAmmo)} isUpgraded={w.maxAmmo !== Infinity && w.isOwned && w.level>=3} />
-                               </div>
-
-                               {w.isOwned && w.level === 5 && (
-                                   <div className="text-xs text-purple-400 flex items-center gap-1 bg-purple-900/20 p-2 rounded border border-purple-500/30">
-                                      <Zap size={14} /> Masterwork Unlocked (Special FX active)
-                                   </div>
-                               )}
-                           </div>
-
-                           <div className="p-4 pt-0 mt-auto flex flex-col gap-2">
-                               {!w.isOwned ? (
-                                   <button 
-                                      onClick={() => handleBuy(w)}
-                                      disabled={saveData.credits < w.price}
-                                      className={`w-full py-3 rounded font-bold transition flex justify-center items-center gap-2 ${saveData.credits >= w.price ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg' : 'bg-slate-700 text-slate-500 cursor-not-allowed'}`}
-                                   >
-                                      BUY FOR <DollarSign size={16}/>{w.price}
-                                   </button>
-                               ) : (
-                                   <>
-                                      <div className="flex gap-2">
-                                          <button 
-                                            onClick={() => handleEquipPrimary(w)}
-                                            disabled={w.isEquippedPrimary}
-                                            className={`flex-1 py-2 text-xs font-bold rounded uppercase tracking-wider ${w.isEquippedPrimary ? 'bg-green-600/20 text-green-500 border border-green-500/50' : 'bg-slate-700 text-white hover:bg-slate-600'}`}
-                                          >
-                                             {w.isEquippedPrimary ? 'Primary' : 'Equip Pri'}
-                                          </button>
-                                          <button 
-                                            onClick={() => handleEquipSecondary(w)}
-                                            disabled={w.isEquippedSecondary || w.isEquippedPrimary}
-                                            className={`flex-1 py-2 text-xs font-bold rounded uppercase tracking-wider ${(w.isEquippedSecondary) ? 'bg-yellow-600/20 text-yellow-500 border border-yellow-500/50' : w.isEquippedPrimary ? 'opacity-30 cursor-not-allowed bg-slate-800 text-slate-500' : 'bg-slate-700 text-white hover:bg-slate-600'}`}
-                                          >
-                                             {w.isEquippedSecondary ? 'Secondary' : 'Equip Sec'}
-                                          </button>
-                                      </div>
-
-                                      {w.level < 5 && (
-                                          <button 
-                                            onClick={() => handleUpgrade(w)}
-                                            disabled={saveData.credits < getUpgradePrice(w.level)!}
-                                            className={`w-full py-2 mt-1 rounded text-sm font-bold transition flex justify-between items-center px-4 ${saveData.credits >= getUpgradePrice(w.level)! ? 'bg-amber-600 hover:bg-amber-500 text-white' : 'bg-slate-800 border border-slate-700 text-slate-500 cursor-not-allowed'}`}
-                                          >
-                                             <span>UPGRADE LV {w.level + 1}</span>
-                                             <span className="flex items-center"><DollarSign size={14}/>{getUpgradePrice(w.level)}</span>
-                                          </button>
-                                      )}
-                                   </>
-                               )}
-                           </div>
-
-                       </div>
-                   ))}
-               </div>
-            </div>
-        </motion.div>
-    );
-}
-
-function StatRow({ label, value, isUpgraded = false, inverse = false, suffix = '' }: any) {
-    return (
-        <div className="flex justify-between items-center text-sm">
-            <span className="text-slate-400 font-mono">{label}</span>
-            <span className={`font-bold font-mono ${isUpgraded ? 'text-green-400' : 'text-slate-200'}`}>
-                {value}{suffix} {isUpgraded && <span className="text-green-500 text-xs ml-1">↑</span>}
-            </span>
+           ) : (
+               <div className="text-yellow-400 text-xs font-bold uppercase tracking-widest mt-1">MAX RANK REACHED</div>
+           )}
         </div>
-    )
+    );
 }
 
 function Overlay({ children, title, subtitle, titleColor = "text-white" }: { children: ReactNode, title: string, subtitle?: string, titleColor?: string }) {
@@ -835,63 +828,85 @@ function Overlay({ children, title, subtitle, titleColor = "text-white" }: { chi
    )
 }
 
-function TouchControls({ onBtnDown, onBtnUp }: { onBtnDown: (key: string) => void, onBtnUp: (key: string) => void }) {
+function TouchControls({ onBtnDown, onBtnUp, onToggleFullscreen }: { onBtnDown: (key: string) => void, onBtnUp: (key: string) => void, onToggleFullscreen: () => void }) {
   const press = (key: string) => onBtnDown(key);
   const release = (key: string) => onBtnUp(key);
 
-  const requestFullscreen = () => {
-     if (document.documentElement.requestFullscreen) {
-        document.documentElement.requestFullscreen().catch((err) => console.log(err));
-     }
-  };
-
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-50 flex items-end justify-between gap-2 p-3 sm:hidden pointer-events-none pb-8 landscape:pb-4 touch-none">
-      <div className="pointer-events-auto grid grid-cols-3 gap-2">
+    <div className="fixed bottom-0 left-0 right-0 z-50 flex items-end justify-between p-4 sm:p-6 lg:p-8 sm:hidden portrait:hidden pointer-events-none touch-none pb-safe pl-safe pr-safe">
+      {/* Left Thumb Zone */}
+      <div className="pointer-events-auto flex gap-2">
+        <div className="grid grid-cols-2 gap-2">
+           <button
+             className="w-14 h-14 rounded-2xl bg-slate-800/80 border-b-4 border-slate-900 border-x-2 border-t-2 border-slate-600 text-slate-300 font-black text-2xl active:translate-y-1 active:border-b-0 touch-manipulation flex items-center justify-center shadow-lg"
+             onTouchStart={(e) => { e.preventDefault(); press('a'); }}
+             onTouchEnd={(e) => { e.preventDefault(); release('a'); }}
+             onMouseDown={() => press('a')}
+             onMouseUp={() => release('a')}
+             onMouseLeave={() => release('a')}
+           >
+             ◀
+           </button>
+           <button
+             className="w-14 h-14 rounded-2xl bg-slate-800/80 border-b-4 border-slate-900 border-x-2 border-t-2 border-slate-600 text-slate-300 font-black text-2xl active:translate-y-1 active:border-b-0 touch-manipulation flex items-center justify-center shadow-lg"
+             onTouchStart={(e) => { e.preventDefault(); press('d'); }}
+             onTouchEnd={(e) => { e.preventDefault(); release('d'); }}
+             onMouseDown={() => press('d')}
+             onMouseUp={() => release('d')}
+             onMouseLeave={() => release('d')}
+           >
+             ▶
+           </button>
+        </div>
         <button
-          className="h-14 w-12 sm:h-16 sm:w-16 rounded-2xl bg-slate-900/80 border border-cyan-400 text-white text-xl active:scale-95 active:bg-cyan-900 touch-manipulation flex items-center justify-center"
-          onTouchStart={(e) => { e.preventDefault(); press('a'); }}
-          onTouchEnd={(e) => { e.preventDefault(); release('a'); }}
-          onMouseDown={() => press('a')}
-          onMouseUp={() => release('a')}
-          onMouseLeave={() => release('a')}
+           className="w-14 h-14 ml-2 rounded-full bg-cyan-700/80 border-b-4 border-cyan-900 border-x-2 border-t-2 border-cyan-500 text-cyan-200 font-bold active:translate-y-1 active:border-b-2 touch-manipulation flex items-center justify-center shadow-lg"
+           onTouchStart={(e) => { e.preventDefault(); press('w'); }}
+           onTouchEnd={(e) => { e.preventDefault(); release('w'); }}
+           onMouseDown={() => press('w')}
+           onMouseUp={() => release('w')}
+           onMouseLeave={() => release('w')}
         >
-          ◀
-        </button>
-
-        <button
-          className="h-14 w-12 sm:h-16 sm:w-16 rounded-2xl bg-slate-900/80 border border-cyan-400 text-white text-xl active:scale-95 active:bg-cyan-900 touch-manipulation flex items-center justify-center"
-          onTouchStart={(e) => { e.preventDefault(); press('w'); }}
-          onTouchEnd={(e) => { e.preventDefault(); release('w'); }}
-          onMouseDown={() => press('w')}
-          onMouseUp={() => release('w')}
-          onMouseLeave={() => release('w')}
-        >
-          ⬆
-        </button>
-
-        <button
-          className="h-14 w-12 sm:h-16 sm:w-16 rounded-2xl bg-slate-900/80 border border-cyan-400 text-white text-xl active:scale-95 active:bg-cyan-900 touch-manipulation flex items-center justify-center"
-          onTouchStart={(e) => { e.preventDefault(); press('d'); }}
-          onTouchEnd={(e) => { e.preventDefault(); release('d'); }}
-          onMouseDown={() => press('d')}
-          onMouseUp={() => release('d')}
-          onMouseLeave={() => release('d')}
-        >
-          ▶
+           JUMP
         </button>
       </div>
 
-      <div className="pointer-events-auto grid grid-cols-2 gap-2">
+      {/* Right Thumb Zone */}
+      <div className="pointer-events-auto flex items-end gap-2 relative">
+        <div className="flex flex-col gap-2 pb-14 mr-2">
+            <button
+               className="w-12 h-12 rounded-full bg-purple-700/80 border-b-4 border-purple-900 border-x-2 border-t-2 border-purple-500 text-purple-200 font-bold text-xs active:translate-y-1 active:border-b-2 touch-manipulation flex items-center justify-center shadow-lg"
+               onTouchStart={(e) => { e.preventDefault(); press('l'); }}
+               onTouchEnd={(e) => { e.preventDefault(); release('l'); }}
+               onMouseDown={() => press('l')}
+               onMouseUp={() => release('l')}
+               onMouseLeave={() => release('l')}
+            >
+               SWAP
+            </button>
+            <button
+               className="w-12 h-12 rounded-full bg-amber-600/80 border-b-4 border-amber-800 border-x-2 border-t-2 border-amber-400 text-amber-100 font-bold text-xs active:translate-y-1 active:border-b-2 touch-manipulation flex items-center justify-center shadow-lg"
+               onTouchStart={(e) => { e.preventDefault(); press('k'); }}
+               onTouchEnd={(e) => { e.preventDefault(); release('k'); }}
+               onMouseDown={() => press('k')}
+               onMouseUp={() => release('k')}
+               onMouseLeave={() => release('k')}
+            >
+               BOMB
+            </button>
+            <button
+               className="w-12 h-12 rounded-full bg-emerald-600/80 border-b-4 border-emerald-800 border-x-2 border-t-2 border-emerald-400 text-emerald-100 font-bold text-xs active:translate-y-1 active:border-b-2 touch-manipulation flex items-center justify-center shadow-lg"
+               onTouchStart={(e) => { e.preventDefault(); press('i'); }}
+               onTouchEnd={(e) => { e.preventDefault(); release('i'); }}
+               onMouseDown={() => press('i')}
+               onMouseUp={() => release('i')}
+               onMouseLeave={() => release('i')}
+            >
+               MELEE
+            </button>
+        </div>
+        
         <button
-          className="h-14 min-w-[3.5rem] rounded-2xl bg-slate-800/90 border border-slate-400 text-white text-xs font-black active:scale-95 touch-manipulation col-span-2 flex items-center justify-center -translate-y-12 fixed right-[4.5rem] bottom-20 w-16 portrait:-translate-y-20 portrait:right-32"
-          onClick={requestFullscreen}
-        >
-           ⛶
-        </button>
-
-        <button
-          className="h-14 min-w-[3.5rem] rounded-2xl bg-red-600/90 border border-red-300 text-white text-xs font-black active:scale-95 active:bg-red-700 touch-manipulation"
+          className="w-20 h-20 rounded-full bg-red-600/90 border-b-4 border-red-900 border-x-2 border-t-2 border-red-400 text-red-100 font-bold text-lg active:translate-y-1 active:border-b-0 touch-manipulation flex items-center justify-center shadow-lg"
           onTouchStart={(e) => { e.preventDefault(); press('j'); }}
           onTouchEnd={(e) => { e.preventDefault(); release('j'); }}
           onMouseDown={() => press('j')}
@@ -901,38 +916,21 @@ function TouchControls({ onBtnDown, onBtnUp }: { onBtnDown: (key: string) => voi
           FIRE
         </button>
 
-        <button
-          className="h-14 min-w-[3.5rem] rounded-2xl bg-orange-600/90 border border-orange-300 text-white text-xs font-black active:scale-95 active:bg-orange-700 touch-manipulation"
-          onTouchStart={(e) => { e.preventDefault(); press('k'); }}
-          onTouchEnd={(e) => { e.preventDefault(); release('k'); }}
-          onMouseDown={() => press('k')}
-          onMouseUp={() => release('k')}
-          onMouseLeave={() => release('k')}
-        >
-          BOMB
-        </button>
-
-        <button
-          className="h-14 min-w-[3.5rem] rounded-2xl bg-purple-700/90 border border-purple-300 text-white text-[10px] sm:text-xs font-black active:scale-95 active:bg-purple-800 touch-manipulation"
-          onTouchStart={(e) => { e.preventDefault(); press('l'); }}
-          onTouchEnd={(e) => { e.preventDefault(); release('l'); }}
-          onMouseDown={() => press('l')}
-          onMouseUp={() => release('l')}
-          onMouseLeave={() => release('l')}
-        >
-          SWAP
-        </button>
-
-        <button
-          className="h-14 min-w-[3.5rem] rounded-2xl bg-slate-800/90 border border-slate-300 text-white text-[10px] sm:text-xs font-black active:scale-95 active:bg-slate-700 touch-manipulation"
-          onTouchStart={(e) => { e.preventDefault(); press('p'); }}
-          onTouchEnd={(e) => { e.preventDefault(); release('p'); }}
-          onMouseDown={() => press('p')}
-          onMouseUp={() => release('p')}
-          onMouseLeave={() => release('p')}
-        >
-          PAUSE
-        </button>
+        {/* Top-right floating utility buttons */}
+        <div className="absolute -top-32 right-0 flex flex-col gap-2">
+            <button
+               className="w-10 h-10 rounded-lg bg-slate-800/80 border border-slate-500 text-slate-300 font-bold text-xl active:scale-95 touch-manipulation flex items-center justify-center shadow-lg"
+               onClick={() => { press('p'); setTimeout(() => release('p'), 100); }}
+            >
+               II
+            </button>
+            <button
+               className="w-10 h-10 rounded-lg bg-slate-800/80 border border-slate-500 text-slate-300 font-bold text-xl active:scale-95 touch-manipulation flex items-center justify-center shadow-lg"
+               onClick={onToggleFullscreen}
+            >
+               ⛶
+            </button>
+        </div>
       </div>
     </div>
   );

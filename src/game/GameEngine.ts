@@ -1,6 +1,8 @@
 import { audioSystem } from '../lib/audio';
 import { Player, Enemy, Bullet, Particle, ItemDrop, Crate, Rect, WeaponType, ComboType, FloatingText } from './Types';
 import { WEAPON_DEFS, getCombo } from './Weapons';
+import { getArmorDef } from './Armors';
+import { getMeleeDef } from './MeleeWeapons';
 
 export class GameEngine {
   canvas: HTMLCanvasElement;
@@ -79,19 +81,36 @@ export class GameEngine {
     this.onStateChange(s);
   }
 
-  initGame(savedData: { primary: WeaponType, secondary: WeaponType | null, levels: Record<string, number>, levelConfig?: any } = { primary: 'pistol', secondary: null, levels: {} }) {
+  initGame(savedData: { primary: WeaponType, secondary: WeaponType | null, levels: Record<string, number>, levelConfig?: any, equippedArmor?: string | null, equippedMeleeWeapon?: string | null, meleeLevels?: Record<string, number>, maxLives?: number, currentLives?: number } = { primary: 'pistol', secondary: null, levels: {} }) {
     this.levelConfig = savedData.levelConfig || null;
     
+    // Armor bonus
+    let armorBonusHp = 0;
+    let armorDmgReduction = 0;
+    let speedMod = 0;
+    if (savedData.equippedArmor) {
+        const armorDef = getArmorDef(savedData.equippedArmor);
+        if (armorDef) {
+            armorBonusHp = armorDef.maxHpBonus;
+            armorDmgReduction = armorDef.damageReduction;
+            speedMod = armorDef.speedModifier;
+        }
+    }
+
     this.player = {
       x: 100, y: 300, width: 30, height: 50,
       vx: 0, vy: 0,
-      hp: 100, maxHp: 100, lives: 3, score: 0, creditsEarned: 0,
+      hp: 100 + armorBonusHp, maxHp: 100 + armorBonusHp, lives: savedData.currentLives ?? 3, score: 0, creditsEarned: 0, xpEarned: 0,
       isCrouching: false, isGrounded: false, facingRight: true,
       invulnerableTimer: 0,
       currentWeapon: savedData.primary || 'pistol', secondaryWeapon: savedData.secondary,
       comboActive: null, comboTimer: 0,
       ammo: { pistol: Infinity, machineGun: 0, shotgun: 0, rocketLauncher: 0, flamethrower: 0, laserRifle: 0, heavyRailgun: 0, teslaCannon: 0 },
-      grenades: 3, speed: 5
+      grenades: 3, speed: 5 * (1 + speedMod),
+      damageReduction: armorDmgReduction,
+      equippedMeleeWeapon: savedData.equippedMeleeWeapon,
+      meleeLevel: savedData.equippedMeleeWeapon ? (savedData.meleeLevels?.[savedData.equippedMeleeWeapon] || 1) : 1,
+      meleeCooldownTimer: 0
     };
     
     // Give max ammo to starting weapons, adjusted by upgrade level (level 3 gives +20%)
@@ -202,6 +221,7 @@ export class GameEngine {
 
   updatePlayer() {
     const p = this.player;
+    if (p.meleeCooldownTimer && p.meleeCooldownTimer > 0) p.meleeCooldownTimer--;
     if (p.invulnerableTimer > 0) p.invulnerableTimer--;
     if (p.comboTimer > 0) p.comboTimer--;
     if (p.comboTimer === 0) p.comboActive = null;
@@ -258,6 +278,72 @@ export class GameEngine {
     if (this.keys['j']) {
       this.playerShoot();
     }
+    
+    // Melee
+    if (this.keys['i']) {
+      this.playerMelee();
+    }
+  }
+
+  playerMelee() {
+     const p = this.player;
+     if (!p.equippedMeleeWeapon) return;
+     if (p.meleeCooldownTimer && p.meleeCooldownTimer > 0) return;
+
+     const meleeDef = getMeleeDef(p.equippedMeleeWeapon);
+     if (!meleeDef) return;
+
+     const level = p.meleeLevel || 1;
+     const range = meleeDef.range + (level >= 4 ? 20 : 0);
+     const damage = Math.floor(meleeDef.baseDamage * (1 + (level-1)*0.15));
+     
+     p.meleeCooldownTimer = meleeDef.cooldown;
+
+     // Attack rect
+     const attackX = p.facingRight ? p.x + p.width : p.x - range;
+     const r = { x: attackX, y: p.y, width: range, height: p.height };
+
+     // Visual effect
+     this.addParticles(p.facingRight ? p.x + p.width + 10 : p.x - 10, p.y + p.height/2, meleeDef.color, 15);
+     audioSystem.playShoot('pistol'); // Or a swoosh sound
+
+     // Hit enemies
+     this.enemies.forEach(e => {
+        if (this.rectIntersect(r, e)) {
+           e.hp -= damage;
+           
+           if (e.hp > 0 && meleeDef.specialEffect) {
+               if (meleeDef.specialEffect === 'Stun') {
+                  e.vx = 0;
+                  // Optional: add stun status
+               } else if (meleeDef.specialEffect === 'Burn') {
+                  e.hp -= 15; // Instant bonus burn
+               }
+           }
+           
+           if (e.hp <= 0) e.markedForDeletion = true;
+           this.addParticles(e.x + e.width/2, e.y + e.height/2, meleeDef.color, 5);
+        }
+     });
+
+     // Hit crates
+     this.crates.forEach(c => {
+         if (this.rectIntersect(r, c)) {
+             c.hp -= damage;
+             if (c.hp <= 0) c.markedForDeletion = true;
+         }
+     });
+     
+     // Bullet deflection (level 5 or specific effect)
+     if (meleeDef.specialEffect === 'Deflect' || level >= 5) {
+         this.bullets.forEach(b => {
+             if (!b.isPlayer && this.rectIntersect(r, b)) {
+                 b.isPlayer = true;
+                 b.vx = -b.vx;
+                 b.damage *= 2;
+             }
+         });
+     }
   }
 
   playerShoot() {
@@ -398,6 +484,18 @@ export class GameEngine {
     }
   }
 
+  damagePlayer(amount: number) {
+      if (this.player.invulnerableTimer > 0) return;
+      
+      const reduction = this.player.damageReduction || 0;
+      const actualDamage = Math.max(1, Math.floor(amount * (1 - reduction)));
+      this.player.hp -= actualDamage;
+      
+      this.player.invulnerableTimer = 60;
+      audioSystem.playHurt();
+      this.addParticles(this.player.x + this.player.width/2, this.player.y + this.player.height/2, '#ef4444', 10);
+  }
+
   explode(x: number, y: number, isPlayer: boolean, damage: number, radius: number) {
      this.screenShakeTimer = 10;
      audioSystem.playExplosion();
@@ -422,8 +520,8 @@ export class GameEngine {
              }
          });
      } else {
-         if (this.rectIntersect(r, this.player) && this.player.invulnerableTimer <= 0) {
-             this.player.hp -= damage;
+         if (this.rectIntersect(r, this.player)) {
+             this.damagePlayer(damage);
          }
      }
   }
@@ -561,14 +659,17 @@ export class GameEngine {
       if (e.markedForDeletion || e.hp <= 0) {
          this.player.score += e.type === 'boss' ? 5000 : 100;
          
-         // Credits
+         // Credits & XP
          let creds = 10;
-         if (e.type === 'rifle') creds = 15;
-         if (e.type === 'drone') creds = 20;
-         if (e.type === 'shield') creds = 25;
-         if (e.type === 'heavy') creds = 40;
-         if (e.type === 'boss') creds = this.levelConfig ? this.levelConfig.rewardCredits : 300;
+         let xp = 10;
+         if (e.type === 'rifle') { creds = 15; xp = 15; }
+         if (e.type === 'drone') { creds = 20; xp = 20; }
+         if (e.type === 'shield') { creds = 25; xp = 25; }
+         if (e.type === 'heavy') { creds = 40; xp = 40; }
+         if (e.type === 'boss') { creds = this.levelConfig ? this.levelConfig.rewardCredits : 300; xp = 250; }
+         
          this.player.creditsEarned += creds;
+         this.player.xpEarned += xp;
          this.floatingTexts.push({ x: e.x, y: e.y, text: `+${creds}`, color: '#fbbf24', lifeTime: 60, maxLifeTime: 60, width: 0, height: 0, vx: 0, vy: -1 });
 
          this.explode(e.x + e.width/2, e.y + e.height/2, false, 0, e.type === 'boss' ? 100 : 30);
@@ -756,11 +857,9 @@ export class GameEngine {
     if (this.player.invulnerableTimer <= 0) {
         for (const e of this.enemies) {
             if (this.rectIntersect(this.player, e)) {
-                this.player.hp -= 20;
-                this.player.invulnerableTimer = 60;
+                this.damagePlayer(20);
                 this.player.vx = (this.player.x > e.x ? 5 : -5);
                 this.player.vy = -5;
-                audioSystem.playHurt();
                 break;
             }
         }
@@ -809,10 +908,9 @@ export class GameEngine {
            }
         } else {
             if (this.rectIntersect(b, this.player) && this.player.invulnerableTimer <= 0) {
-                this.player.hp -= b.damage;
+                this.damagePlayer(b.damage);
                 hit = true;
                 this.addParticles(b.x, b.y, '#ef4444', 5);
-                audioSystem.playHurt();
             }
         }
         
@@ -852,36 +950,12 @@ export class GameEngine {
   draw() {
     const { ctx, width, height } = this;
     
+    ctx.clearRect(0, 0, width, height);
+    
     // Screen shake
     ctx.save();
     if (this.screenShakeTimer > 0) {
         ctx.translate((Math.random()-0.5)*10, (Math.random()-0.5)*10);
-    }
-
-    // Sky
-    ctx.fillStyle = this.levelConfig ? this.levelConfig.backgroundClass : '#0f172a';
-    ctx.fillRect(0, 0, width, height);
-
-    // Parallax background
-    ctx.fillStyle = this.levelConfig ? (this.levelConfig.theme === 'snow' ? '#cbd5e1' : '#1e293b') : '#1e293b';
-    const bgOffset1 = (this.bgScrollX * 0.2) % width;
-    for(let i=-1; i<2; i++) {
-        ctx.beginPath();
-        ctx.moveTo(i * width - bgOffset1, height - 50);
-        ctx.lineTo(i * width - bgOffset1 + 100, height - 200);
-        ctx.lineTo(i * width - bgOffset1 + 300, height - 150);
-        ctx.lineTo(i * width - bgOffset1 + 500, height - 300);
-        ctx.lineTo(i * width - bgOffset1 + 800, height - 50);
-        ctx.fill();
-    }
-    
-    // Foreground ruins
-    ctx.fillStyle = '#334155';
-    const bgOffset2 = (this.bgScrollX * 0.5) % width;
-    for(let i=-1; i<2; i++) {
-        ctx.fillRect(i * width - bgOffset2 + 100, height - 100, 80, 50);
-        ctx.fillRect(i * width - bgOffset2 + 300, height - 150, 60, 100);
-        ctx.fillRect(i * width - bgOffset2 + 600, height - 80, 120, 30);
     }
 
     // Floor

@@ -13,3 +13,19 @@ body {
   overflow: hidden;
   background-color: #0f172a;
 }
+
+@layer utilities {
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom, 20px);
+  }
+  .pt-safe {
+    padding-top: env(safe-area-inset-top, 20px);
+  }
+  .pl-safe {
+    padding-left: env(safe-area-inset-left, 20px);
+  }
+  .pr-safe {
+    padding-right: env(safe-area-inset-right, 20px);
+  }
+}
+
